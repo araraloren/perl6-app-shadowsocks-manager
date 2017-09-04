@@ -1,0 +1,19 @@
+{
+  "authors" : [
+    "araraloren"
+  ],
+  "build-depends" : [ ],
+  "depends" : [ ],
+  "description" : "blah blah blah",
+  "license" : "Artistic-2.0",
+  "name" : "App::ShadowsocksManager",
+  "perl" : "6.c",
+  "provides" : {
+    "App::ShadowsocksManager" : "lib/App/ShadowsocksManager.pm6"
+  },
+  "resources" : [ ],
+  "source-url" : "",
+  "tags" : [ ],
+  "test-depends" : [ ],
+  "version" : "0.0.1"
+}

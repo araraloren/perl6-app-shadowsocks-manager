@@ -1,0 +1,450 @@
+#!/usr/bin/env perl6
+
+use JSON::Fast;
+use Getopt::Advance;
+use Getopt::Advance::Helper;
+use Readline;
+
+# command design
+#
+#   install --prefix=/usr <version>
+#   start <directory> | <configure> | kcptun
+#   list
+#   kill index
+#
+
+class Server { ... }
+class AsyncInstance { ... }
+class ServerManager { ... }
+
+my $sm = ServerManager.new;
+
+module command { ... }
+
+my ($readline, $flag) = (Readline.new, True);
+
+signal(SIGINT).tap({
+	note "\nreceive CTRL+C clean and quit.";
+    if $sm.server.Int > 0 {
+        $sm.clean();
+    }
+	exit 0;
+});
+$readline.using-history;
+while $flag {
+	if $readline.readline("♫|{$*USER.Str}|>") -> $line {
+		if $line.trim -> $line {
+			$readline.add-history($line);
+			try {
+				my @opts = [ command::install(), command::list(), command::start(), command::kill() ];
+				my @command = $line.split(/\s+/, :skip-empty);
+
+                if @command[0] eq "quit" {
+                    $sm.clean() if $sm.server.Int > 0;
+                    $flag = False;
+                }
+                else {
+                    getopt(@command, |@opts, :autohv);
+                }
+				CATCH {
+					default {
+                        .say;
+					}
+				}
+			}
+		}
+	}
+}
+
+
+module command {
+    sub append-option($os, @option) {
+        for @option -> $info {
+            if +$info == 2 {
+                $os.push($info.[0], $info.[1]);
+            }
+            else {
+                $os.push($info.[0], $info.[1], value => $info.[2]);
+            }
+        }
+        $os;
+    }
+
+    our sub kill() {
+        my @option = [
+            [
+                "h|help=b",
+                "Print help message.",
+            ],
+        ];
+        my $os = append-option(OptionSet.new, @option);
+        $os.insert-cmd(
+            "kill",
+            "Kill the ss-server",
+            sub ($os, @args) {
+                if $sm.server.elems > 0 {
+                    if +@args == 1 {
+                        $sm.kill(@args[0].Int);
+                    }
+                    else {
+                        &ga-helper($os, $*ERR);
+                    }
+                }
+                else {
+                    note "Nothing here!";
+                }
+                return True;
+            }
+        );
+        return $os;
+    }
+
+    our sub list() {
+        my @option = [
+            [
+                "h|help=b",
+                "Print help message.",
+            ],
+        ];
+        my $os = append-option(OptionSet.new, @option);
+        $os.insert-cmd(
+            "list",
+            "List the ss-server current running",
+            sub ($os, @args) {
+                if $sm.server.elems > 0 {
+                    my @all;
+                    for $sm.server.pairs -> $pair {
+                        my $server = $pair.value;
+                        my @info = [];
+                        @info.push($pair.key());
+                        @info.push($server.config.IO.basename());
+                        @info.push(%(from-json $server.config.IO.slurp)<server_port>);
+                        if $server.kcptun.defined {
+                            @info.push($server.kcptun.pid());
+                        }
+                        else {
+                            @info.push("None");
+                        }
+                        @all.push(@info);
+                    }
+                    say < INDEX PID PORT KCPTUN >.join("\t");
+                    say .join("\t") for @all;
+                }
+                else {
+                    note "Nothing here!";
+                }
+                return True;
+            }
+        );
+        return $os;
+    }
+
+
+    our sub start() {
+        my @option = [
+            [
+                "h|help=b",
+                "Print help message.",
+            ],
+            [
+                "prefix=s",
+                "Set the prefix of ss-server",
+                '/usr',
+            ],
+            [
+                "kcptun=b",
+                "Start a kcptun for current ss-server",
+            ],
+            [
+                "port=i",
+                "Set the kcptun listen port, will using next port of ss-server when not set",
+            ],
+            [
+                "send=i",
+                "Set send windows size",
+                1024,
+            ],
+            [
+                "recv=i",
+                "Set receive windows size",
+                1024,
+            ],
+            [
+                "mode=s",
+                "Set kcptun mode",
+                "fast2",
+            ],
+        ];
+        my $os = append-option(OptionSet.new, @option);
+        $os.insert-cmd(
+            "start",
+            "-start <directory|configure>",
+            sub ($os, @args) {
+                if +@args == 1 {
+                    $sm.start($os, $os<prefix>, @args[0].Str);
+                }
+                else {
+                    &ga-helper($os, $*ERR);
+                }
+                return True;
+            }
+        );
+        return $os;
+    }
+
+    our sub install() {
+        my @option = [
+            [
+                "h|help=b",
+                "Print help message.",
+            ],
+            [
+                "prefix=s",
+                "Set the prefix of ss-server installation",
+                '/usr',
+            ],
+            [
+                "repo=s",
+                "Set the repo of ss-server",
+                'https://github.com/shadowsocks/shadowsocks-libev.git'
+            ],
+            [
+                "git=s",
+                "Set git that using for clone repo",
+                'git',
+            ],
+            [
+                "tmp=s",
+                "Set directory working for installation",
+                'ss-libev',
+            ],
+            [
+                "quite=b/",
+                "Press shell output",
+            ],
+        ];
+        my $os = append-option(OptionSet.new, @option);
+        $os.insert-cmd(
+            "install",
+            "-install <version>",
+            sub ($os, @args) {
+                if +@args == 1 {
+                    installVersion($os, $os<prefix>, @args[0].Str);
+                }
+                else {
+                    &ga-helper($os, $*ERR);
+                }
+                return True;
+            }
+        );
+        return $os;
+    }
+}
+
+
+sub installVersion($os, Str $prefix, Str $newver) {
+    # Get local ss-server version
+    my $str = tryRun("{$prefix ~ "/bin/ss-server"} -v 2>\&1");
+    my $ver = Version.new("0.0.0");
+
+    if $str ~~ /'shadowsocks-libev' \s+ (\d+\.\d+\.\d+) \s+/ {
+        $ver = Version.new(~$0);
+        report("Get local version: $ver");
+    }
+    else {
+        report("Not found ss-server in $prefix");
+    }
+
+    if Version.new($newver) < $ver {
+        report("Local version is newer than given $newver");
+        return;
+    }
+
+    report("Will install new version $newver");
+
+    my ($git, $repo, $tmp) = ($os<git>, $os<repo>, $os<tmp>);
+    my $old = $*CWD;
+
+    my @command = [
+        [
+            "$git clone $repo $tmp",
+            "Clone repo $repo",
+        ],
+        [
+            -> { chdir($tmp) },
+            "Enter directory $tmp",
+        ],
+        [
+            "$git submodule update --init --recursive",
+            "Update submodule ..",
+        ],
+        [
+            "$git checkout $newver",
+            "Checkout tag $newver",
+        ],
+        [
+            "./autogen.sh",
+            "Run autogen ..",
+        ],
+        [
+            "./configure --prefix={$prefix}",
+            "Run configure ..",
+        ],
+        [
+            "make",
+            "Run make",
+        ],
+        [
+            "sudo make install",
+            "Install ss-server to {$prefix}",
+        ],
+        [
+            -> { chdir($old); },
+            "Leave directory $tmp",
+        ]
+    ];
+
+    for @command -> ($cmd, $msg) {
+        report($msg);
+        if $cmd ~~ Callable {
+            $cmd.();
+        }
+        else {
+            tryRun($cmd, slient => $os<quite>);
+        }
+    }
+}
+
+sub tryRun(Str $cmd, :$slient) {
+    try {
+        return shell($cmd ~ {$slient ?? ' >/dev/null 2>&1' !! ""});
+        CATCH {
+            default {
+                fail "Can not run command: $cmd";
+            }
+        }
+    }
+}
+
+sub report(Str $log) {
+    note "==> ", $log;
+}
+
+class ServerManager {
+    has @.server;
+
+    method start($os, Str $prefix, Str $something) {
+        my $bin = "{$prefix}/bin/ss-server";
+
+        given $something.IO {
+            when .e && .d {
+                for .dir() {
+                    if .extension eq "json" {
+                        @!server.push(my $server = Server.new( config => .resolve, ));
+                        $server.start($bin, "{.resolve.basename}.log", "-c", .resolve);
+                        self!start-kcptun($server, $os, $prefix) if $os<kcptun>;
+                    }
+                }
+            }
+            when .e && .f {
+                @!server.push(my $server = Server.new( config => $something, ));
+                $server.start($bin, "{$something.IO.basename}.log", "-c", $something);
+                self!start-kcptun($server, $os, $prefix) if $os<kcptun>;
+            }
+            default {
+                report("Not a valid thing can start!");
+            }
+        }
+    }
+
+    method !start-kcptun($server, $os, Str $prefix,) {
+        my %config = &from-json($server.config.IO.slurp);
+        $server.start(
+            :kcptun,
+            "{$prefix}/bin/kcptun",
+            'kcptun.log',
+            '-l',
+            ":" ~ ($os<port>.defined ?? $os<port> !! (%config<server_port> + 1)),
+            '-t',
+            '127.0.0.1:' ~ %config<server_port>,
+            '-crypt',
+            'salsa20',
+            '-key',
+            'iwantmoremorefastagain',
+            '-sndwnd',
+            $os<send>,
+            '-rcvwnd',
+            $os<recv>,
+            '-mode',
+            $os<mode>,
+        );
+    }
+
+    method kill($index) {
+        @!server[$index].server.kill();
+        given @!server[$index].kcptun {
+            .kill if .defined;
+        }
+        @!server.splice($index, 1);
+    }
+
+    method clean() {
+        for @!server -> $server {
+            $server.server.kill();
+            $server.kcptun.kill() if $server.kcptun.defined;
+        }
+        @!server = [];
+    }
+}
+
+class Server {
+    has $.config is required;
+    has $.server;
+    has $.kcptun;
+
+    method start(Str $bin, Str $log, :$kcptun, *@args) {
+        my $ai = AsyncInstance.new( bin => $bin, log => $log, args => @args,);
+        if $kcptun {
+            $!kcptun = $ai;
+        }
+        else {
+            $!server = $ai;
+        }
+        $ai.start();
+    }
+}
+
+class AsyncInstance {
+    has $.bin;
+    has @.args;
+    has $.log is required;
+    has $.logfh;
+    has $.proc;
+    has $.promise;
+
+    submethod TWEAK() {
+        if $!log.defined {
+            $!logfh = $!log.IO.open(:w);
+        }
+    }
+
+    method start() {
+        $!proc = Proc::Async.new($!bin, @!args);
+        $!proc.stdout.tap( -> $v { $!logfh.print("STDOUT\@{time} ==> $v"); });
+        $!proc.stderr.tap( -> $v { $!logfh.print("STDERR\@{time} ==> $v"); });
+        say $!proc;
+        $!promise = $!proc.start;
+    }
+
+    method kill() {
+        $!proc.kill(Signal::SIGKILL);
+    }
+
+    method status() {
+        $!promise.status();
+    }
+
+    method pid() {
+        $!proc.pid();
+    }
+}

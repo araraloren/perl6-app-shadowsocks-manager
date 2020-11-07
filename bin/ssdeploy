@@ -162,17 +162,37 @@ module command {
             [
                 "send=i",
                 "Set send windows size",
-                1024,
+                2048,
             ],
             [
                 "recv=i",
                 "Set receive windows size",
-                1024,
+                2048,
             ],
             [
                 "mode=s",
                 "Set kcptun mode",
                 "fast2",
+            ],
+            [
+                "mtu=i",
+                "Set mtu value",
+                1400,
+            ],
+            [
+                "dscp=i",
+                "Set DSCP value",
+                0,
+            ],
+            [
+                "ds=i",
+                "Set datashard value",
+                0,
+            ],
+            [
+                "ps=i",
+                "Set parityshard value",
+                0,
             ],
         ];
         my $os = append-option(OptionSet.new, @option);
@@ -242,7 +262,7 @@ module command {
 }
 
 
-sub installVersion($os, Str $prefix, Str $newver) {
+sub installVersion($os, Str $prefix, Str $newver is copy) {
     # Get local ss-server version
     my $str = tryRun("{$prefix ~ "/bin/ss-server"} -v 2>\&1");
     my $ver = Version.new("0.0.0");
@@ -264,6 +284,8 @@ sub installVersion($os, Str $prefix, Str $newver) {
 
     my ($git, $repo, $tmp) = ($os<git>, $os<repo>, $os<tmp>);
     my $old = $*CWD;
+
+    $newver = 'v' ~ $newver; # release has a 'v' prefix
 
     my @command = [
         [
@@ -368,20 +390,29 @@ class ServerManager {
             '-t',
             '127.0.0.1:' ~ %config<server_port>,
             '-crypt',
-            'salsa20',
+            'aes',
             '-key',
             'iwantmoremorefastagain',
+            '-nocomp',
+            '-dscp',
+            $os<dscp>,
+            '-datashard',
+            $os<ds>,
+            '-parityshard',
+            $os<ps>,
             '-sndwnd',
             $os<send>,
             '-rcvwnd',
             $os<recv>,
             '-mode',
             $os<mode>,
+            '-mtu',
+            $os<mtu>,
         );
     }
 
     method kill($index) {
-        @!server[$index].server.kill();
+        @!server[$index].server.?kill();
         given @!server[$index].kcptun {
             .kill if .defined;
         }
@@ -390,8 +421,8 @@ class ServerManager {
 
     method clean() {
         for @!server -> $server {
-            $server.server.kill();
-            $server.kcptun.kill() if $server.kcptun.defined;
+            $server.server.?kill();
+            $server.kcptun.?kill() if $server.kcptun.defined;
         }
         @!server = [];
     }

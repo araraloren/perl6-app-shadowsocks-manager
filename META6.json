@@ -3,7 +3,12 @@
     "araraloren"
   ],
   "build-depends" : [ ],
-  "depends" : [ ],
+  "depends" : [
+      "JSON::Fast",
+      "Getopt::Advance",
+      "Getopt::Advance::Helper",
+      "Readline"
+  ],
   "description" : "Manage your shadowsock process",
   "license" : "Artistic-2.0",
   "name" : "App::ShadowsocksManager",

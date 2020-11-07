@@ -6,7 +6,7 @@ App::ShadowsocksManager - blah blah blah
 SYNOPSIS
 ========
 
-    use App::ShadowsocksManager;
+    Using ssdeploy manager your shadowsock process and kcptun process.
 
 DESCRIPTION
 ===========
